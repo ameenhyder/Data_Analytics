@@ -1,0 +1,1160 @@
+---
+title: "CLIENT ENVIRONMENT DASHBOARD"
+output: html_document
+
+
+params:
+  startdate: "DATE_SUB(CURDATE(), INTERVAL 1 DAY)"         ##start date for engine data, default: one day interval on latest data
+  enddate: "CURDATE()"                                      ##end date
+  
+  startdate_portal: "DATE_SUB(CURDATE(), INTERVAL 2 MONTH)" ##start date for fetching portal data(used in power test) default: two months interval
+  startdate_lookup:  "DATE_SUB(CURDATE(), INTERVAL 1 DAY)" ##start date for checking lookup mismatch, default: one day interval
+  
+  startdate_sme: "DATE_SUB(CURDATE(), INTERVAL 7 DAY)"        ##start date for fetching sme data, it is advised to have atleast fetch data of a week for                                                                                          better analysis
+  enddate_sme: "CURDATE()"                                     ##end date  
+  
+  sme: '`mundiale_tfn.smetable_new2`'                      ##enter sme table name on ai server
+  evallog: '`engine.evaluatorlog`'                         ##enter evaluatorlog table name
+  callgroup: '`mundialeayty_tfn.callgroups`'               ####enter callgroup table name
+  agentperformance: '`mundialeayty_tfn.agentperformance`'  ##enter agentperformance table name
+  skill_column_ap: 'split'                                 ##enter skill identifier column in AP table (split/skill etc)
+  portal_summary: '`Portal.OptimizedDailySummary`'         ##enter portal summary table name on archival
+  vdn: '`engine.vdn`'
+  benchmark: '`engine.benchmark`'
+  lookup_table: '`engine.eclext`'
+  programID: "('MundialeAYTY_TFN')"                        ##programID , the code is cable to cater only one programid at a time.
+  engineID: "('Mundiale_TFN_AYTY')"                        ##engineID , the code is cable to cater only one engineid at a time.
+  
+  
+  skill: "(0024900024,0024900025)"                         ##relevant skills
+    
+  sme_filter: "crm_lookup = 1 and leadlist_lookup = 1 and c_offer_type_CRM = 'PRE_CTRL' and skill is not null and skill <> 'NA' and tipo_de_ligacao = 'Preditivo' and      nconnects_oth2 <> 'NA' and isrelevant = 1"               ##sme_filter to fetch inscope calls              
+  
+  callgroup_filter: "iscurrent = 1"                       ##callgroup nad agentperformance filter
+  agentperformance_filter: "iscurrent = 1"
+  
+  portal_filter: "L1_L2 ='L1'"                            ##filter for fetching relevant data from portal
+  
+  vdn_filter: 'active=1'                                  ##engine.vdn filter
+  
+  varaible_sme: "skill, AHT, floor(aht/100) aht_bin, issale, on_off , agentid, c_qt_durc_trfd_3_crm, c_tmp_base_3_crm, C_Age_CRM, m_filler_ll, m_oferta_ll, M_FIELD_2_LL, M_freshBau, nconnectsrollup_oth3"  
+  ##enter variable names after agentid
+  
+  is_analysis: ["F","F","F","F","F","F","T","T","T","T","T","T","T","T"] 
+  ## mark True at the position of entered variables
+  
+  
+  
+  varaibles_evallog: "calltime, hour(calltime) hour_of_day, on_off,skill, vdn, agentid, AP_LoggedInPercentile,APPercentileUsed, callgroup, CP_Actual,     CallPercentileUsed, nAgents, nAgents_Filtered, nCalls, nCalls_Filtered, AP_Actual, evaluatorcomments,                                             substr(evaluatorcomments, locate('ModelAP', evaluatorcomments ), length(evaluatorcomments)) comments " ##evaluatorlog columns
+  
+  variables_callgroup: "*, (MaxPercentile - MinPercentile) expected_utilization" ## fetching all columns from callgroup table
+  
+  variable_agentperformance: "*"  ## fetching all columns
+  
+
+  
+  varaiable_portal: "date(Calldate) calldate ,programid  ,engineid, skill ,concat(Rtrim(lower(engineid)),'_',skill) as joinkey2 ,customgroup, OffCalls ,   (OnCalls + OffCalls) TotalCalls, Optimization1_off OffSales, case when Offcalls=0 then 0 else  (Optimization1_off / Offcalls) end BaseCR" 
+  
+                    ##portal variable (dont need to change much)
+  
+  variable_vdn: "vdn as skill , benchmarkid , lower(engineid) engineid , concat(Rtrim(lower(engineid)),'_',benchmarkid) joinkey1,              concat(Rtrim(lower(engineid)),'_',vdn)                    joinkey2" ##vdn variable (dont need to change much)
+  
+  variable_benchmark: "benchmarkid, lower(engineid) engineid, benchmarktype, ifnull(offpercentage,100) benchmark,           concat(rtrim(lower(engineid)),'_',benchmarkid)                         joinkey1"   ####benchmark variable (dont need to change much)
+    
+  date_evallog: "date(calltime) date"       ##date column in sme and evaluator log, please change if different
+  calltime_evallog: "calltime"              ##calltime column for evaluatorlog and sme
+
+  optimizationmetric : 'issale'             # optimization column in sme. All stat are calculated on this.
+
+  database_archival: "tfnmundialesatmap"    # Schema on archival server.
+  host_archival : '10.4.2.85'               ##archival server ip
+  database_ai: "smexplorerdata"             ##credentials for ai and archival server, if user and pass different for both server, please do changes accordingly
+  host_ai: "10.4.2.82"
+  user : 'mundiale_ai_user'
+  pass : "#mundiale_ai_user#"
+  port : 3307
+  
+  lookup_nodes: ["stan","normalized","btnhistory","btnoth2"] ##enter only active nodes of genericlookup on local portal
+  
+   balerion_comment_prefix: 'TFN_mundiale'  ##add prefix of the balerion comments
+---
+
+
+
+
+<style>
+pre {
+  overflow-x: auto;
+}
+
+tbody tr:nth-child(odd){
+    background-color: #F7FBFF;
+  }
+
+pre code {
+  word-wrap: normal;
+  white-space: pre;
+}
+</style> 
+
+```{r packages1, include=FALSE , warning=FALSE , message=FALSE}
+##Loading essential libraries
+
+library(tidyverse)
+library(dplyr)
+library(DBI)
+library(tidyr)
+library(RMySQL)
+library(data.table)
+library(stringr)
+library(modelr)
+library(knitr)
+library(ggplot2)
+library(lubridate)
+##library(hrbrthemes)
+library(ggpubr)
+library(formattable)
+library(reshape2)
+library(pwr)
+library(stringi)
+library(kableExtra)
+library(UpSetR)
+library(reshape2)
+# library(odbc)
+# library(RODBC)
+```
+
+
+```{r disconnect connections1, include=FALSE , warning=FALSE , message=FALSE}
+##disconnecting all previous connections to the database
+all_cons <- dbListConnections(MySQL())
+# print(all_cons)
+for(con in all_cons)
+  +  dbDisconnect(con)
+```
+
+```{r SmeQuery1 , include=FALSE , echo=FALSE , warning=FALSE , message=FALSE}
+
+ ##function to fetch evaluator data
+
+Query_agent_util <- function(params){  
+    
+    my_query = paste0("select ", params$date_evallog, ", " , params$varaibles_evallog, " from ", params$evallog, " where ", params$calltime_evallog, " between " ,params$startdate, " and " , params$enddate, " and skill in " , params$skill)
+    return(my_query)
+}  
+
+ ##function to fetch data from callgroup table
+
+Query_abnorm_util <- function(params){
+
+    my_query = paste0("select " , params$variables_callgroup, " from ", params$callgroup, " where skill in " , params$skill, " and ", params$callgroup_filter)
+    return(my_query)
+}
+
+##function to fetch data from aegntperformance table
+
+Query_agent_per <- function(params){
+
+    my_query = paste0("select " , params$variable_agentperformance, " from ", params$agentperformance, " where ", params$skill_column_ap , " in " , params$skill, " and ", params$agentperformance_filter)
+}
+
+##function to fetch data from portal
+
+portal_query <- function(params){
+
+    my_query = paste0("select " , params$varaiable_portal, " from ", params$portal_summary, " where skill in " , params$skill, " and calldate >=",  params$startdate_portal, " and ", params$portal_filter, " and engineid in" , params$engineID)
+    return(my_query)
+}
+
+##function to fetch data from engine.vdn
+
+vdn_query  <- function(params){
+
+    my_query = paste0("select " , params$variable_vdn, " from ", params$vdn, " where vdn in " , params$skill, " and " , params$vdn_filter, " and programid in", params$programID)
+    return(my_query)
+}
+
+##function to fetch data from engine.benchmark
+
+benchmark_query  <- function(params){
+
+    my_query = paste0("select " , params$variable_benchmark, " from ", params$benchmark, " where programid in", params$programID)
+    return(my_query)
+}
+
+
+# lookup_query <- function(params,x){
+# 
+#     my_query = paste0("select b lookup_node, c value, count(*) calls from (select * , substr(y, locate('" , substr(x, start  = 1, stop = 1) , "' , y),  locate(',', y)-1) b , substr(y, locate('::,', y) + 3 ,   length(y) - locate(',', reverse(y)) - locate('::,', y) -2 ) c from (select * , substr(x, locate('" , substr(x, start  = 1, stop = 1) , "', x), case when locate('|', x) <>0 then locate('|', x)-1 else length(x) end)  y from (select *, substr(genericlookupstatus, locate('" , x , "', genericlookupstatus), length(genericlookupstatus))  x from" , params$lookup_table , " where calltime >= " , params$startdate_lookup , " order by calltime desc) as z) as a) as d group by 1,2" )
+#     
+#     return(my_query)
+# }
+
+
+##function to fetch data from engine.eclext
+
+lookup_query <- function(params){
+
+   my_query = paste0("select genericlookupstatus from " , params$lookup_table, " where calltime >=" , params$startdate_lookup )
+    return(my_query)
+}
+
+##function to fetch data from sme
+
+sme_query <- function(params){
+
+   my_query = paste0("select ", params$date_evallog, " , " , params$varaible_sme , ",", params$optimizationmetric, " as issale from " , params$sme , " where skill in " , params$skill, " and " , params$sme_filter , " and calltime between " , params$startdate_sme , " and " , params$enddate_sme)
+    
+   return(my_query)
+}
+
+```
+
+
+
+
+```{r get_data1 , include=FALSE, echo=FALSE  , warning=FALSE , message=FALSE}
+
+###This chunk will create the final tables that will be used to plot graphs,tables and figures in final output
+
+########################################## Running all the above functions to fetch relevant data and tables ###############################################
+
+my_query_agent_util <- Query_agent_util(params)
+
+MySQLConnect216AI <- dbConnect(dbDriver("MySQL"),user=params$user, password=params$pass,
+                               dbname=params$database_archival, host=params$host_archival, port = params$port)
+
+VARNAME_1 <- dbGetQuery(MySQLConnect216AI, my_query_agent_util); 
+dist1<-as.data.frame(VARNAME_1)
+setnames(dist1, tolower(names(dist1)))
+dist1$date <- ymd(dist1$date)
+dist1$calltime <- ymd_hms(dist1$calltime)
+
+
+
+my_query_callgroup <- Query_abnorm_util(params)
+MySQLConnect216AI <- dbConnect(dbDriver("MySQL"),user=params$user, password=params$pass,
+                               dbname=params$database_archival, host=params$host_archival, port = params$port)
+
+
+VARNAME_2 <- dbGetQuery(MySQLConnect216AI, my_query_callgroup); 
+dist2<-as.data.frame(VARNAME_2)
+setnames(dist2, tolower(names(dist2)))
+
+my_query_agentper <- Query_agent_per(params)
+MySQLConnect216AI <- dbConnect(dbDriver("MySQL"),user=params$user, password=params$pass,
+                               dbname=params$database_archival, host=params$host_archival, port = params$port)
+
+
+VARNAME_3 <- dbGetQuery(MySQLConnect216AI, my_query_agentper); 
+dist3 <- as.data.frame(VARNAME_3)
+setnames(dist3, tolower(names(dist3)))
+dist3$generatedon <- ymd(dist3$generatedon)
+
+
+portal <- portal_query(params)
+MySQLConnect216AI <- dbConnect(dbDriver("MySQL"),user=params$user, password=params$pass,
+                               dbname=params$database_archival, host=params$host_archival, port = params$port)
+
+
+VARNAME_4 <- dbGetQuery(MySQLConnect216AI, portal); 
+dist4 <- as.data.frame(VARNAME_4)
+setnames(dist4, tolower(names(dist4)))
+dist4$calldate = ymd(dist4$calldate)
+
+
+vdn <- vdn_query(params)
+MySQLConnect216AI <- dbConnect(dbDriver("MySQL"),user=params$user, password=params$pass,
+                               dbname=params$database_archival, host=params$host_archival, port = params$port)
+
+
+VARNAME_5 <- dbGetQuery(MySQLConnect216AI, vdn); 
+dist5 <- as.data.frame(VARNAME_5)
+setnames(dist5, tolower(names(dist5)))
+
+benchmark <- benchmark_query(params)
+MySQLConnect216AI <- dbConnect(dbDriver("MySQL"),user=params$user, password=params$pass,
+                               dbname=params$database_archival, host=params$host_archival, port = params$port)
+
+
+VARNAME_6 <- dbGetQuery(MySQLConnect216AI, benchmark); 
+dist6 <- as.data.frame(VARNAME_6)
+setnames(dist6, tolower(names(dist6)))
+
+
+lookup <- lookup_query(params)
+MySQLConnect216AI <- dbConnect(dbDriver("MySQL"),user=params$user, password=params$pass,
+                               dbname=params$database_archival, host=params$host_archival, port = params$port)
+
+
+VARNAME_7 <- dbGetQuery(MySQLConnect216AI, lookup); 
+dist7 <- as.data.frame(VARNAME_7)
+setnames(dist7, tolower(names(dist7)))
+
+sme <- sme_query(params)
+MySQLConnect216AI <- dbConnect(dbDriver("MySQL"),user=params$user, password=params$pass,
+                               dbname=params$database_ai, host=params$host_ai, port = params$port)
+
+
+VARNAME_8 <- dbGetQuery(MySQLConnect216AI, sme); 
+dist8 <- as.data.frame(VARNAME_8)
+setnames(dist8, tolower(names(dist8)))
+dist8$date = ymd(dist8$date)
+
+
+# is_var_numeric <- as.vector((unlist(params$is_var_numeric)))     ###create vector of active d-config nodes
+# 
+# is_var_numeric = as.logical(is_var_numeric)  #######mark true the varaibles of sme that needs to be converted to numeric class##############
+# 
+# for(x in 1:length(is_var_numeric)){
+#   if (is_var_numeric[x] == TRUE){
+#     dist8[[x]] = as.numeric(dist8[[x]])
+#   }
+#   
+# }
+
+
+calculate_mode <- function(x) {                       ### custom mode function 
+  uniqx <- unique(na.omit(x))
+  uniqx[which.max(tabulate(match(x, uniqx)))]
+}
+
+
+round_df <- function(x, digits) {                   ########## custom  round off function 
+    # round all numeric variables
+    # x: data frame 
+    # digits: number of digits to round
+    numeric_columns <- sapply(x, mode) == 'numeric'
+    x[numeric_columns] <-  round(x[numeric_columns], digits)
+    x
+}
+
+
+########################################################################## AHT Analysis ##############################################################
+
+dist8$aht = as.numeric(dist8$aht)
+dist8$aht_bin = as.numeric(dist8$aht_bin)
+
+x_aht <- dist8 %>% select(aht,issale,skill)
+x_aht$is_sale <- ifelse(x_aht$issale == 0, "nonsale", "sale") ### convert issale flag to appropriate string
+
+y_aht <- plyr::ddply(x_aht, "is_sale", summarise, grp.mean=mean(aht))
+
+
+aht_bin_raw_sale <- dist8 %>% group_by(skill, aht_bin) %>% summarise(raw_sale = sum(issale))  ##calculate raw sale group by skill and aht_bin
+# 
+# aht_bin_cr_2 <- data.frame( bin = character(15) , cr = numeric(15) )
+
+
+aht_bin_cr_1=data.frame(matrix(NA, nrow= 15 * length(unique(dist8$skill)) , ncol=3))
+colnames(aht_bin_cr_1) = c("aht greater than","cr", "skill") 
+
+
+
+for( i in unique(dist8$skill)) {                                                          ##calculate CR accross different cumalitive AHT buckets
+
+aht_bin_cr_2=data.frame(matrix(NA, nrow= 15 , ncol=3))
+colnames(aht_bin_cr_2) = c("bin","cr", "skill")
+
+a <- 0 
+
+for (x in 1:length(aht_bin_cr_2$bin)){
+  
+  aht_bin_cr_2$bin[x] <- a
+  
+  aht_bin_cr_2$cr[x] <- (dist8 %>% filter(aht > a , date <= Sys.Date() - 2, skill == i) %>% summarise(mean(issale)*100))[[1]] ##make date dynamic
+  
+  aht_bin_cr_2$skill[x] <- i
+  
+  a = a + 100
+  
+}
+
+colnames(aht_bin_cr_2)[1] = "aht greater than"
+aht_bin_cr_2$cr = round(aht_bin_cr_2$cr, digits = 2)
+
+aht_bin_cr_1 = rbind(aht_bin_cr_1,aht_bin_cr_2)
+aht_bin_cr_1 = na.omit(aht_bin_cr_1)
+
+}
+
+max_aht <-  aht_bin_cr_1 %>% group_by(skill) %>% top_n(1, cr)   ##select bucket with maximmum AHT to perform the analysis
+colnames(max_aht)[1] = c("threshold_aht")
+
+pred_cr = dist8 %>% filter(date == Sys.Date() - 1 )                ##make date dynamic
+pred_cr = merge(pred_cr, max_aht, by = c("skill"))
+
+##calculation of predicted cr and gain skillwise and overall on the basis of AHT
+
+# pred_cr <- transform(pred_cr, issale_pred= ifelse(aht >= threshold_aht, 1, 0))  
+# # pred_cr$issale_pred = ifelse(pred_cr$aht >= pred_cr$threhold_aht, 1, 0)
+# 
+# pred_cr_1 = pred_cr %>% group_by(date,skill) %>% filter(on_off == 1) %>% summarise(real_sale_on = sum(issale), pred_sale_on = sum(issale_pred), real_cr_on = mean(issale)*100, pred_cr_on = mean(issale_pred)*100, total_calls_on = n() )
+# 
+# pred_cr_2 = pred_cr %>% group_by(date,skill) %>% filter(on_off == 0) %>% summarise(real_sale_off = sum(issale), pred_sale_off = sum(issale_pred), real_cr_off = mean(issale)*100, pred_cr_off = mean(issale_pred)*100, total_calls_off = n())
+# 
+# pred_cr_3_off = pred_cr %>% group_by(date) %>% filter(on_off == 0) %>% summarise(real_sale_off = sum(issale), pred_sale_off = sum(issale_pred), real_cr_off = mean(issale)*100, pred_cr_off = mean(issale_pred)*100, total_calls_off = n())
+# 
+# 
+# pred_cr_3_on = pred_cr %>% group_by(date) %>% filter(on_off == 1) %>% summarise(real_sale_on = sum(issale), pred_sale_on = sum(issale_pred), real_cr_on = mean(issale)*100, pred_cr_on = mean(issale_pred)*100, total_calls_on = n())
+# 
+# pred_cr_3_tot =  merge(pred_cr_3_on,pred_cr_3_off, by = c("date"))
+# pred_cr_3_tot$skill = "overall"
+# pred_cr_3_tot = pred_cr_3_tot[, c("date", "skill", "real_sale_on",  "pred_sale_on", "real_cr_on", "pred_cr_on", "total_calls_on", "real_sale_off", "pred_sale_off", "real_cr_off",  "pred_cr_off", "total_calls_off" )] 
+# 
+# pred_cr_tot = merge(pred_cr_1,pred_cr_2, by = c("date","skill"))
+# pred_cr_tot = rbind(pred_cr_tot, pred_cr_3_tot)
+# pred_cr_tot = pred_cr_tot %>% mutate(real_inc = real_sale_on - real_sale_off , pred_inc = pred_sale_on - pred_sale_off)
+# pred_cr_tot = pred_cr_tot %>% mutate(real_gain = round(real_inc*100/(total_calls_on - real_inc),3) , pred_gain = round(pred_inc*100/(total_calls_on - pred_inc),3))
+# 
+# pred_cr_tot = pred_cr_tot %>% select(date,skill, real_cr_on, pred_cr_on, real_cr_off, pred_cr_off, real_gain, pred_gain)
+# 
+# for(x in 3:length(colnames(pred_cr_tot))){
+#   pred_cr_tot[[x]] = round_df(pred_cr_tot[[x]],3)
+# }
+
+###################################################### Skill Definition ######################################################
+
+ 
+#### calculate different statistics to define various skills
+
+# skill_cr_cv = dist8 %>% group_by(skill) %>% summarise(callvolume = n())
+# skill_cr_cv$off_cr = (dist8 %>% filter(on_off == 0) %>% group_by(skill) %>% summarise(mean(issale)*100))[[2]]
+# skill_cr_cv$median_nconnect = (dist8 %>% group_by(skill) %>% summarise(median(nconnectsrollup_oth3)))[[2]]
+# skill_cr_cv$mean_nconnect = (dist8 %>% group_by(skill) %>% summarise(mean(nconnectsrollup_oth3)))[[2]]
+# skill_cr_cv$median_tenure = (dist8 %>% group_by(skill) %>% summarise(median(c_tmp_base_crm)))[[2]]
+# skill_cr_cv$mean_tenure = (dist8 %>% group_by(skill) %>% summarise(mean(c_tmp_base_crm)))[[2]]
+# skill_cr_cv$median_datausage = (dist8 %>% group_by(skill) %>% summarise(median(c_qt_durc_trfd_crm)))[[2]]
+# skill_cr_cv$mean_datausage = (dist8 %>% group_by(skill) %>% summarise(mean(c_qt_durc_trfd_crm)))[[2]]
+# skill_cr_cv$most_frequent_package = (dist8 %>% group_by(skill) %>% summarise(calculate_mode(m_oferta_ll)))[[2]]
+# skill_cr_cv$frequent_filler_value = (dist8 %>% group_by(skill) %>% summarise(calculate_mode(m_filler_ll)))[[2]]
+
+
+#### important variables callvolume distribution accross different skills
+
+is_analysis =  as.logical(as.vector(unlist(params$is_analysis))) 
+for (i in 1:(length(is_analysis))){
+  if(is_analysis[i]){
+    dist8[[i+1]] = as.character(unlist(dist8[[i+1]]))
+  }
+  
+}
+
+
+# var_dist_qt <- dist8 %>% group_by(skill,c_qt_durc_trfd_3_crm) %>% summarise(callvolume = n(), total_sale = sum(issale))
+# var_dist_qt <- var_dist_qt %>% group_by(skill) %>% mutate(cv_perc = callvolume*100/sum(callvolume), CR = total_sale*100/sum(callvolume))
+# 
+# 
+# var_dist_tmp <- dist8 %>% group_by(skill,c_tmp_base_3_crm) %>% summarise(callvolume = n(),  total_sale = sum(issale))
+# var_dist_tmp <- var_dist_tmp %>% group_by(skill) %>% mutate(cv_perc = callvolume*100/sum(callvolume) , CR = total_sale*100/sum(callvolume))
+# 
+# 
+# var_dist_filler <- dist8 %>% group_by(skill,m_filler_ll) %>% summarise(callvolume = n() , total_sale = sum(issale))
+# var_dist_filler <- var_dist_filler %>% group_by(skill) %>% mutate(cv_perc = callvolume*100/sum(callvolume) , CR = total_sale*100/sum(callvolume))
+# var_dist_filler[var_dist_filler$m_filler_ll == ",",]$m_filler_ll = 'Comma';
+# var_dist_filler[var_dist_filler$m_filler_ll == "",]$m_filler_ll = 'Blank';
+# 
+# 
+# var_dist_oferta <- dist8 %>% group_by(skill,m_oferta_ll) %>% summarise(callvolume = n() , total_sale = sum(issale))
+# var_dist_oferta <- var_dist_oferta %>% group_by(skill) %>% mutate(cv_perc = callvolume*100/sum(callvolume) , CR = total_sale*100/sum(callvolume))
+# 
+# 
+# var_dist_freshbau <- dist8 %>% group_by(skill,m_freshbau) %>% summarise(callvolume = n()  , total_sale = sum(issale))
+# var_dist_freshbau <- var_dist_freshbau %>% group_by(skill) %>% mutate(cv_perc = callvolume*100/sum(callvolume) ,  CR = total_sale*100/sum(callvolume))
+# 
+# 
+# var_dist_field2 <- dist8 %>% group_by(skill,m_field_2_ll) %>% summarise(callvolume = n() , total_sale = sum(issale))
+# var_dist_field2 <- var_dist_field2 %>% group_by(skill) %>% mutate(cv_perc = callvolume*100/sum(callvolume) , CR = total_sale*100/sum(callvolume))
+
+
+# ggplot(dist8, aes(x=aht, fill=issale)) +
+#   geom_density(alpha=0.4) + xlim(5, 20) 
+
+################################################################## VDN to skill mapping #############################################################
+
+
+vdn_skill = dist1 %>% group_by(vdn, skill) %>% tally()
+vdn_skill_map = dcast(vdn_skill, skill ~ vdn, value.var = "n" , fill = 0)
+
+
+# vdn_skill_map = kable(vdn_skill_map) %>% kable_styling("striped") %>% add_header_above(c(" " = 1, "VDN" = length(colnames(vdn_skill_map)) - 1))
+# vdn_skill_map = as.matrix(vdn_skill_map)
+
+
+
+########################################################## lookup nodes match percentage #############################################################
+
+
+# lookup_data = data.frame(lookup_node=character(),value = character(),calls = numeric())
+# 
+# for (y in lookup_nodes) {
+#   lookup <- lookup_query(params,y)
+#   MySQLConnect216AI <- dbConnect(dbDriver("MySQL"),user=params$user, password=params$pass,
+#                                dbname=params$database_archival, host=params$host_archival, port = params$port)
+#   
+#   VARNAME_7 <- dbGetQuery(MySQLConnect216AI, lookup); 
+#   dist7 <- as.data.frame(VARNAME_7)
+#   setnames(dist7, tolower(names(dist7)))
+#   
+#   lookup_data = rbind(lookup_data,dist7)
+# 
+#   
+#   
+# }
+
+
+# 
+# lookup <- lookup_query(params,"stan")
+# MySQLConnect216AI <- dbConnect(dbDriver("MySQL"),user=params$user, password=params$pass,
+#                                dbname=params$database_archival, host=params$host_archival, port = params$port)
+# 
+# 
+# VARNAME_7 <- dbGetQuery(MySQLConnect216AI, lookup); 
+# dist7 <- as.data.frame(VARNAME_7)
+# setnames(dist7, tolower(names(dist7)))
+
+# instr <- function(str1,str2,startpos=1,n=1){
+#     aa=unlist(strsplit(substring(str1,startpos),str2))
+#     if(length(aa) < n+1 ) return(0);
+#     return(sum(nchar(aa[1:n])) + startpos+(n-1)*nchar(str2) )
+# }
+
+# 
+# l = as.data.frame(substr(dist7$genericlookupstatus,  start = gregexpr(pattern ='stan' , dist7$genericlookupstatus), stop = nchar(dist7$genericlookupstatus)))
+# colnames(l) = c("l_s")
+# l$l_s = as.character(l$l_s)
+# 
+# y = as.data.frame(substr(l$l_s,  start = s , stop =
+#                          
+#                          if (as.data.frame(unlist((gregexpr(pattern ='|', l$l_s)))) != 0){
+#                             as.data.frame(unlist((gregexpr(pattern ='|', l$l_s)))) - 1 
+#                          } else { nchar(l$l_s) }
+#                          
+#                          ))
+# 
+# 
+# y = (separate(l[1,1], letters(1:length(lookup_nodes)), "|"))
+
+lookup_nodes <- as.vector((unlist(params$lookup_nodes)))     ###create vector of active d-config nodes
+
+y <- dist7 %>%  as.data.frame() %>%                          ### separate genericlookupstatuts column into sub-vcolumns 
+  separate(genericlookupstatus, 
+  into = letters[1:length(lookup_nodes)], sep = "\\|") 
+
+d <- colnames(y)
+lookup_data = data.frame(lookup_node=character(),value = character(),perc = numeric())
+
+for (i in d) {
+  x = as.data.frame(y[[i]])                                 ##loop to calculate the match percentage of each node
+  colnames(x) = c(i)
+  
+  x = x %>%  as.data.frame() %>%  separate(i, into = c("lookup_node","number","value","num"), sep = ",")
+  x = x %>% group_by(lookup_node,value) %>% summarise(count = n())
+  x = x %>% mutate(total_calls = sum(count))
+  x = x %>% mutate(perc = count*100/total_calls)
+  x = x %>% select(lookup_node,value,perc)
+  x = as.data.frame(x)
+  
+  
+  lookup_data = rbind(lookup_data,x)
+  }
+
+
+
+########################################################################### Power Test ########################################################################
+
+pwrTest <-   function(monthly.calls, target.gain, base.cr, sigma, on.bm )
+{
+  infeasible <- T
+  months <- 0.2
+  granularity.months <- 0.1
+  power <- 0.75  
+  alpha <- 0.05
+  
+  if (base.cr == 0 || sigma == 0) {
+	infeasible <- F
+	months <- 'Inappropriate Parameters'
+	}
+  
+  while(infeasible){
+    total.calls <- as.numeric(monthly.calls) * months
+    uplift.cr <- as.numeric(base.cr) * (1 - target.gain)
+    on.calls <- total.calls * on.bm
+    off.calls <- total.calls - on.calls
+    d <- abs(uplift.cr - base.cr)/as.numeric(sigma)
+    test.result <- try(pwr.t2n.test(n1=off.calls, d=d, sig.level=alpha, power=power, alternative = "greater"), silent = T)
+    
+    if(class(test.result) == 'try-error' || test.result$n2 > on.calls){
+      months <- months + granularity.months
+    } else {
+      infeasible <- F
+    }
+  }
+  
+  months
+}
+
+
+
+portaldata <- as.data.frame( dist4  %>% group_by(skill, programid, joinkey2)%>% 
+                               summarise(monthly.calls= sum(totalcalls), Off.Sales= sum(offsales), Off.Calls = sum(offcalls),
+                                         base.cr = sum(offsales)/ sum(offcalls),  sigma = sqrt(base.cr * (1 - base.cr)), Days = n() ))
+
+portaldata$base.cr <- ifelse(is.nan(portaldata$base.cr), 0, portaldata$base.cr)
+
+matched <- dist5 %>% inner_join(x= dist5, y = dist6, by="joinkey1")
+
+matched <- matched[matched$benchmarktype != 'fulloff',]
+
+portaldata$Months_50_50 <- mapply(pwrTest, portaldata$monthly.calls, 0.04, portaldata$base.cr, portaldata$sigma, 0.50)
+
+portaldata$Months_80_20 <- mapply(pwrTest, portaldata$monthly.calls, 0.04, portaldata$base.cr, portaldata$sigma, 0.80)
+
+portaldata$base.cr<- round(portaldata$base.cr*100,2)
+portaldata<- portaldata %>% mutate( Recommendation = ifelse(Months_80_20 <3.2,'80/20',ifelse(Months_50_50 < 0.8,'50/50','FIFO')))
+portaldata<- portaldata %>% inner_join(x=portaldata, y=matched, by = "joinkey2") %>% mutate(Status = ifelse(benchmark == 20, '80/20','50/50'))
+
+portaldata2<- portaldata %>% select ("programid" , "skill.x", "Status","Recommendation")
+
+
+
+############################################ AP CP correct application ######################################################
+
+
+agent_perfor = dist3 %>% select(agentid,split,percentile,comments)
+colnames(agent_perfor)[2] = "skill"
+
+
+dist9 <- dist1 %>% filter(rscorez == 0)
+
+dist9$comment_bal_ap <- ifelse(dist9$comments == "", as.character(stri_reverse(dist9$evaluatorcomments)) , NA)
+
+prefix <- stri_reverse(as.character(params$balerion_comment_prefix))
+
+dist9$pos = str_locate(dist9$comment_bal_ap, prefix)
+
+for (i in 1:length(dist9$comment_bal_ap)) {
+  
+  dist9$comment_bal_ap[i] =   stri_reverse(substr(as.character(dist9$comment_bal_ap[i]),1,dist9$pos[i,2]))
+
+  
+}
+
+
+dist9$comments = ifelse(dist9$comments == "", as.character(dist9$comment_bal_ap), as.character(dist9$comments))
+
+
+
+
+
+calls_ag = dist9 %>% filter(!(is.na(ap_actual))) %>% select(agentid,skill,ap_actual,comments)
+ap_check = merge(calls_ag,agent_perfor,by=c("agentid","skill","comments"))
+
+ap_check = ap_check %>% filter(!(is.na(percentile)))
+ap_check$ap_app <- ifelse(ap_check$ap_actual == ap_check$percentile  , 1 , 0)
+ap_skill_incorrect = ap_check %>% group_by(skill) %>% summarise(incorrect_ap_perc = (1 - mean(ap_app)), total_calls = n())
+ap_skill_incorrect$MOE = 195 *  sqrt((ap_skill_incorrect$incorrect_ap_perc) * (1-ap_skill_incorrect$incorrect_ap_perc) / ap_skill_incorrect$total_calls)
+ap_skill_incorrect = ap_skill_incorrect %>% select(skill,incorrect_ap_perc,MOE)
+ap_skill_incorrect$incorrect_ap_perc = ap_skill_incorrect$incorrect_ap_perc * 100 
+ap_skill_incorrect = round_df(ap_skill_incorrect, 3)
+
+total_calls_skill = ap_check %>% group_by(skill) %>% summarise(total_calls = n())
+ap_agent_incorrect = ap_check %>% group_by(skill,agentid) %>% filter(ap_app == 0) %>% tally()
+ap_agent_incorrect = merge(ap_agent_incorrect,total_calls_skill, by = c("skill"))
+ap_agent_incorrect$incorrect_ap_perc = (ap_agent_incorrect$n/ap_agent_incorrect$total_calls)*100
+ap_agent_incorrect = ap_agent_incorrect %>% select(skill,agentid,incorrect_ap_perc)
+ap_agent_incorrect = ap_agent_incorrect[order(ap_agent_incorrect$skill,-ap_agent_incorrect$incorrect_ap_perc),]
+ap_agent_incorrect = round_df(ap_agent_incorrect, 3)
+rownames(ap_agent_incorrect) = c(1:length(ap_agent_incorrect$skill))
+
+ap_agent_incorrect = ap_agent_incorrect %>% filter(incorrect_ap_perc >= 5)
+
+# 
+# callgroup_table = dist2 %>% select(callgroup,skill,minpercentile,maxpercentile)
+# calls_cg = dist1 %>% select(callgroup,skill,cp_actual)
+# 
+# cp_check = merge(calls_cg,callgroup_table,by=c("callgroup","skill"))
+# cp_check[is.na(cp_check)] = 0
+# 
+# cp_check$cp_app <- ifelse(cp_check$cp_actual >= cp_check$minpercentile && cp_check$cp_actual <= cp_check$maxpercentile  , 1 , 0)
+# 
+# ap_skill_incorrect = ap_check %>% group_by(skill) %>% summarise(incorrect_ap_perc = (1 - mean(ap_app)) * 100)
+# total_calls_skill = ap_check %>% group_by(skill) %>% summarise(total_calls = n())
+# ap_agent_incorrect = ap_check %>% group_by(skill,agentid) %>% filter(ap_app == 0) %>% tally()
+# 
+# ap_agent_incorrect = merge(ap_agent_incorrect,total_calls_skill, by = c("skill"))
+# ap_agent_incorrect$incorrect_ap_perc = (ap_agent_incorrect$n/ap_agent_incorrect$total_calls)*100
+# 
+# ap_agent_incorrect = ap_agent_incorrect %>% select(skill,agentid,incorrect_ap_perc)
+# ap_agent_incorrect = ap_agent_incorrect[order(ap_agent_incorrect$skill,-ap_agent_incorrect$incorrect_ap_perc),]
+# rownames(ap_agent_incorrect) = c(1:length(ap_agent_incorrect$skill))
+
+
+
+################################################################### median choice analysis ##############################################
+
+agent_choice_day = dist1  %>% filter(nagents > 1) %>% group_by(date, skill) %>% summarise(choice_raw = median(nagents), choice_filtered = median(nagents_filtered))
+caller_choice_day = dist1 %>% filter(ncalls > 1) %>% group_by(date,skill) %>% summarise(choice_raw = median(ncalls), choice_filtered = median(ncalls_filtered))
+agent_choice_hour = dist1 %>% filter(nagents > 1) %>% group_by(hour_of_day,skill) %>% summarise(choice_raw = median(nagents), choice_filtered = median(nagents_filtered)) 
+caller_choice_hour = dist1  %>% filter(ncalls > 1) %>% group_by(hour_of_day,skill) %>% summarise(choice_raw = median(ncalls), choice_filtered = median(ncalls_filtered))
+
+order_by_cust = function(df){
+  
+  df = df[order(df$skill), , drop = FALSE]
+  rownames(df) = c(1:length(df$skill))
+  return(df)
+  
+}
+
+agent_choice_day = order_by_cust(agent_choice_day) 
+caller_choice_day = order_by_cust(caller_choice_day)
+agent_choice_hour = order_by_cust(agent_choice_hour)
+caller_choice_hour = order_by_cust(caller_choice_hour)
+
+
+
+################################################################## agent skill login pattern ########################################################
+
+agent_skill = dist1 %>% group_by(agentid, skill) %>% tally()
+colnames(agent_skill)[3] = "call_count"
+skilllist <- levels(as.factor(unique(agent_skill$skill)))
+
+mat <- matrix( nrow = length(skilllist), ncol = length(skilllist))
+rownames(mat) <- skilllist
+colnames(mat) <- skilllist
+
+for(skill1 in skilllist){
+  agentlist1 <- unique(agent_skill[agent_skill$skill == skill1,]$agentid)
+  for(skill2 in skilllist){
+    agentlist2 <- unique(agent_skill[agent_skill$skill == skill2,]$agentid)
+    commonagents <- agentlist2 %in% agentlist1
+    mat[skill1,skill2] = length(which(commonagents))
+  }
+}
+
+mat = as.data.frame(mat)
+
+
+AgentSkillMapping <- dist8%>%
+  group_by(agentid,skill)%>%dplyr::summarise(A=1, Calls=n())%>%filter(Calls>=5)%>%select(-Calls)
+
+AgentSkillMapping <- reshape2::dcast(AgentSkillMapping, agentid ~ skill )
+AgentSkillMapping[is.na(AgentSkillMapping)] <- 0
+AgentSkillMapping <- as.data.frame(AgentSkillMapping)
+AgentSkillMapping <- AgentSkillMapping[-c(1)]
+
+
+####################################################### abnormal callgroup utilization ##########################################################################
+
+total_calls = dist1 %>% count(date,skill)
+callgroupwise_callcount <- dist1 %>% group_by(date,skill,callgroup) %>% tally()
+
+for (i in 1:length(callgroupwise_callcount$date)){
+  callgroupwise_callcount[i,5] = (callgroupwise_callcount[i,4])/
+    (subset(total_calls, skill == as.character(callgroupwise_callcount[i,"skill"])))$n
+}
+colnames(callgroupwise_callcount)[4] = "actual_calls"
+colnames(callgroupwise_callcount)[5] = "actual_utilization"
+
+callgroup_abnormal_util = merge(dist2,callgroupwise_callcount,by=c("skill","callgroup"), all.x = TRUE)
+
+callgroup_abnormal_util = callgroup_abnormal_util %>% select(skill,callgroup,expected_utilization,calls,actual_utilization,actual_calls)
+
+callgroup_abnormal_util = callgroup_abnormal_util %>% mutate(MOE_exp_util = round(195 * (((expected_utilization * (1 - expected_utilization))/sum(callgroup_abnormal_util$calls))^(1/2)),2) , MOE_act_util =  round(195 * (((actual_utilization * (1 - actual_utilization))/sum(callgroup_abnormal_util$actual_calls))^(1/2)),2) )
+
+# callgroup_abnormal_util$expected_utilization = replace_na(callgroup_abnormal_util$expected_utilization,0)
+# callgroup_abnormal_util$expected_utilization = replace_na(callgroup_abnormal_util$actual_utilization,0)
+callgroup_abnormal_util[is.na(callgroup_abnormal_util)] <- 0
+
+callgroup_abnormal_util = callgroup_abnormal_util %>% mutate(abs_difference = abs(expected_utilization - actual_utilization) * 100)
+callgroup_abnormal_util = callgroup_abnormal_util %>% filter(abs_difference >= 2)
+
+callgroup_abnormal_util = callgroup_abnormal_util %>% select(skill, callgroup, expected_utilization , MOE_exp_util, actual_utilization , MOE_act_util, 
+                                                             abs_difference)
+
+callgroup_abnormal_util$expected_utilization = callgroup_abnormal_util$expected_utilization * 100
+callgroup_abnormal_util$actual_utilization = callgroup_abnormal_util$actual_utilization * 100
+
+
+
+callgroup_abnormal_util = callgroup_abnormal_util[order(callgroup_abnormal_util$skill,-callgroup_abnormal_util$abs_difference), , drop = FALSE]
+rownames(callgroup_abnormal_util) = c(1:length(callgroup_abnormal_util$skill))
+
+
+callgroup_abnormal_util =  round_df(callgroup_abnormal_util, 3)
+
+
+
+
+
+data_agentutil <- dist1
+data_agentutil$date <- ymd(data_agentutil$date)
+data_agentutil$on_off <- as.character(data_agentutil$on_off)
+
+
+data_agentutil <-  data_agentutil %>% mutate(ap_loginbin = floor(ap_loggedinpercentile*10))
+data_agentutil <-  data_agentutil %>% mutate(ap_usebin = floor(appercentileused*10))
+data_agentutil <-  data_agentutil %>% mutate(cp_actualbin = floor(cp_actual*10))
+data_agentutil <-  data_agentutil %>% mutate(cp_usebin = floor(callpercentileused*10))
+
+
+############################################ Statistical Significance of Utilization#############################################
+  
+#   ## significane level of cp used ##
+
+  stat_sig_ap_login <-
+    data.frame(skill=character(length(unique(data_agentutil$skill[data_agentutil$on_off == 1]))),
+    p_value=numeric(length(unique(data_agentutil$skill[data_agentutil$on_off == 1]))), significane_result=    character(length(unique(data_agentutil$skill[data_agentutil$on_off == 1]))))
+
+  stat_sig_ap_login$skill = unique(data_agentutil$skill[data_agentutil$on_off == 1]) 
+  stat_sig_ap_login$significane_result = as.character(stat_sig_ap_login$significane_result)
+
+  for (i in 1:length(stat_sig_ap_login$skill)) {
+
+    sig_test <- compare_means(n~on_off, data = data_agentutil %>%
+    count(on_off, skill, ap_loginbin) %>% filter(skill == stat_sig_ap_login[i,1]), method = "t.test")
+
+    stat_sig_ap_login[i,2] = as.numeric(sig_test$p.format)
+    if (sig_test$p.signif ==  "ns") {
+      stat_sig_ap_login[i,3] = "not significant"
+    } else {
+       stat_sig_ap_login[i,3] = "significant, investigate further"
+    }
+
+  }
+
+
+  ##significane level of ap used##
+
+  stat_sig_ap_used <-
+    data.frame(skill=character(length(unique(data_agentutil$skill[data_agentutil$on_off == 1]))),
+    p_value=numeric(length(unique(data_agentutil$skill[data_agentutil$on_off == 1]))),significane_result=character(length(unique(data_agentutil$skill[data_agentutil$on_off == 1]))))
+
+  stat_sig_ap_used$skill = unique(data_agentutil$skill[data_agentutil$on_off == 1])
+  stat_sig_ap_used$significane_result = as.character(stat_sig_ap_used$significane_result)
+
+  for (i in 1:length(stat_sig_ap_used$skill)) {
+
+    sig_test <- compare_means(n~on_off, data = data_agentutil %>%
+    count(on_off, skill, ap_usebin) %>% filter(skill == stat_sig_ap_used[i,1]), method = "t.test")
+
+    stat_sig_ap_used[i,2] = as.numeric(sig_test$p.format)
+    if (sig_test$p.signif ==  "ns") {
+      stat_sig_ap_used[i,3] = "not significant"
+    } else {
+       stat_sig_ap_used[i,3] = "significant, investigate further"
+    }
+
+  }
+# 
+#   
+#   
+#   ##significane level of cp actual##
+#   
+    stat_sig_cp_actual <-
+    data.frame(skill=character(length(unique(data_agentutil$skill[data_agentutil$on_off == 1]))),
+    p_value=numeric(length(unique(data_agentutil$skill[data_agentutil$on_off == 1]))),significane_result=character(length(unique(data_agentutil$skill[data_agentutil$on_off == 1]))))
+
+  stat_sig_cp_actual$skill = unique(data_agentutil$skill[data_agentutil$on_off == 1])
+  stat_sig_cp_actual$significane_result = as.character(stat_sig_cp_actual$significane_result)
+
+  for (i in 1:length(stat_sig_cp_actual$skill)) {
+
+    sig_test <- compare_means(n~on_off, data = data_agentutil %>%
+    count(on_off, skill, cp_actualbin) %>% filter(skill == stat_sig_cp_actual[i,1]), method = "t.test")
+
+    stat_sig_cp_actual[i,2] = as.numeric(sig_test$p.format)
+    if (sig_test$p.signif ==  "ns") {
+      stat_sig_cp_actual[i,3] = "not significant"
+    } else {
+       stat_sig_cp_actual[i,3] = "significant, investigate further"
+    }
+
+ }
+#   
+#   ##significane level of cp used##
+
+  stat_sig_cp_used <-
+    data.frame(skill=character(length(unique(data_agentutil$skill[data_agentutil$on_off == 1]))),
+    p_value=numeric(length(unique(data_agentutil$skill[data_agentutil$on_off == 1]))),significane_result=character(length(unique(data_agentutil$skill[data_agentutil$on_off == 1]))))
+
+  stat_sig_cp_used$skill = unique(data_agentutil$skill[data_agentutil$on_off == 1])
+  stat_sig_cp_used$significane_result = as.character(stat_sig_cp_used$significane_result)
+
+  for (i in 1:length(stat_sig_cp_used$skill)) {
+
+    sig_test <- compare_means(n~on_off, data = data_agentutil %>%
+    count(on_off, skill, cp_usebin) %>% filter(skill == stat_sig_cp_used[i,1]), method = "t.test")
+
+    stat_sig_cp_used[i,2] = as.numeric(sig_test$p.format)
+    if (sig_test$p.signif ==  "ns") {
+      stat_sig_cp_used[i,3] = "not significant"
+    } else {
+       stat_sig_cp_used[i,3] = "significant, investigate further"
+    }
+
+  }
+
+data_agentutil_aplogin <- data_agentutil %>% group_by(on_off,skill,ap_loginbin) %>%  tally()
+data_agentutil_apused <- data_agentutil %>% group_by(on_off,skill,ap_usebin) %>%  tally()
+colnames(data_agentutil_aplogin)[4] = 'count'
+colnames(data_agentutil_apused)[4] = 'count'
+
+
+```
+
+## Utilization Analysis
+``` {r plot1, echo=FALSE, results = 'asis'}
+
+##ggplot(data_agentutil_aplogin, aes(x= AP_loginbin , y=count,  group = on_off)) + geom_line(aes(color = on_off)) +  geom_point() 
+
+##plot1 <- ggplot(data3, aes_(x = as.name(x) , y = as.name(z))) + 
+##geom_line(aes_(color = as.name(y)) , size =1) +
+##geom_point(size = 0.1) +  scale_color_brewer(palette="Set1")
+
+#################################AP utilization graphs#################################
+
+  data_agentutil %>%
+  count(on_off, skill, ap_loginbin) %>% 
+  ggplot(aes(ap_loginbin, n, color = on_off, group = on_off)) +
+    geom_line() + geom_point() +
+     facet_wrap(~ skill) + labs(title = "Agent Utilization Decile Wise (AP login)", x = "AP_bin", y= "Total_Calls")
+ 
+  data_agentutil %>%
+  count(on_off, skill, ap_usebin) %>% 
+  ggplot(aes(ap_usebin, n, color = on_off, group = on_off)) +
+    geom_line() + geom_point() +
+     facet_wrap(~ skill) + labs(title = "Agent Utilization Decile Wise (AP Used)", x = "AP_bin", y= "Total_Calls")
+
+#################################CP Utilization graphs#################################
+    
+  data_agentutil %>%
+  count(on_off, skill, cp_actualbin) %>% 
+  ggplot(aes(cp_actualbin, n, color = on_off, group = on_off)) +
+    geom_line() + geom_point() +
+     facet_wrap(~ skill) + labs(title = "Callgroup Utilization Decile Wise (CP Actual)", x = "CP_bin", y= "Total_Calls")
+  
+  
+  data_agentutil %>%
+  count(on_off, skill, cp_usebin) %>% 
+  ggplot(aes(cp_usebin, n, color = on_off, group = on_off)) +
+    geom_line() + geom_point() +
+     facet_wrap(~ skill) + labs(title = "Callgroup Utilization Decile Wise (CP Used)", x = "CP_bin", y= "Total_Calls")
+  
+######################################significance level graphs and tables###############################
+
+  data_agentutil %>%
+  count(on_off, skill, ap_loginbin) %>%
+  ggplot(aes(on_off, n, color = on_off, group = on_off)) + geom_boxplot() + geom_point() + stat_compare_means(method = "t.test") +
+  facet_wrap(~ skill) + labs(title = "Statistical Significance of AP_login Utilization", x = "On_Off", y= "Total_Calls")
+
+  formattable(stat_sig_ap_login, caption =  "Statistical Significance of AP_login Utilization")
+
+
+  data_agentutil %>%
+  count(on_off, skill, ap_usebin) %>%
+  ggplot(aes(on_off, n, color = on_off, group = on_off)) + geom_boxplot() + geom_point() + stat_compare_means(method = "t.test") +
+  facet_wrap(~ skill) + labs(title = "Statistical Significance of AP_use Utilization", x = "On_Off", y= "Total_Calls")
+
+  formattable(stat_sig_ap_used, caption =  "Statistical Significance of AP_used Utilization")
+
+  data_agentutil %>%
+  count(on_off, skill, cp_actualbin) %>%
+  ggplot(aes(on_off, n, color = on_off, group = on_off)) + geom_boxplot() + geom_point() + stat_compare_means(method = "t.test") +
+  facet_wrap(~ skill) + labs(title = "Statistical Significance of CP_actual Utilization", x = "On_Off", y= "Total_Calls")
+
+  formattable(stat_sig_cp_actual, caption =  "Statistical Significance of CP_actual Utilization")
+
+  data_agentutil %>%
+  count(on_off, skill, cp_usebin) %>%
+  ggplot(aes(on_off, n, color = on_off, group = on_off)) + geom_boxplot() + geom_point() + stat_compare_means(method = "t.test") +
+  facet_wrap(~ skill) + labs(title = "Statistical Significance of CP_use Utilization", x = "On_Off", y= "Total_Calls")
+
+  formattable(stat_sig_cp_used, caption =  "Statistical Significance of CP_used Utilization")
+
+  ##################################### abnormal utilization of callgroup##############################################
+  
+  formattable(callgroup_abnormal_util, list(area(col = abs_difference) ~ color_tile("transparent", "pink")),  align = "l", caption =  "Abnomral Callgroup Utilization")
+```
+
+
+## Agent-Skill Login Pattern
+``` {r plot2, echo=FALSE, results = 'asis'}
+  
+################################# agent skill login pattern ###########################################
+  
+  formattable(mat,caption =  "Agent Skill Login Pattern", align = "l")
+
+  UpSetR::upset(AgentSkillMapping,nsets=20, point.size = 2,text.scale = 1,order.by = "freq")
+```
+
+## Choice Analysis
+``` {r plot3, echo=FALSE, results = 'asis'}
+  ############################################# agent  choice ####################################################
+  
+  formattable(agent_choice_day ,caption =  "Agent Choice Last Day", align = "l")
+  
+  df1 <- agent_choice_day %>% select(skill,date,choice_raw,choice_filtered)
+  df1 <- melt(df1, id=c("skill","date"))
+  
+  ggplot(df1,aes(date,value,  fill = variable)) + geom_bar(stat= "identity",  color = "black", position=position_dodge()) + facet_wrap(~ skill)+
+    scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = "Agent Choice", x = "Date", y= "Median_Choice")
+  
+  formattable(agent_choice_hour ,caption =  "Agent Choice Last Day Hour-wise", align = "l")
+  
+  df2 <- agent_choice_hour %>% select(skill,hour_of_day,choice_raw,choice_filtered)
+  df2 <- melt(df2, id=c("skill","hour_of_day"))
+  
+  ggplot(df2,aes(hour_of_day,value,  fill = variable)) + geom_bar(stat= "identity",  color="black", position=position_dodge()) + facet_wrap(~ skill)+
+    scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = "Agent Choice Hour-wise", x = "Hour_of_Day", y= "Median_Choice")
+  
+  
+  ############################################# caller  choice ####################################################
+  
+  formattable(caller_choice_day ,caption =  "Caller Choice Last Day", align = "l")
+  
+  df3 <- caller_choice_day %>% select(skill,date,choice_raw,choice_filtered)
+  df3 <- melt(df3, id=c("skill","date"))
+  
+  ggplot(df3,aes(date,value,  fill = variable)) + geom_bar(stat= "identity",  color = "black", position=position_dodge()) + facet_wrap(~ skill)+
+     scale_fill_brewer(palette="Blues") + labs(title = "Caller Choice", x = "Date", y= "Median_Choice")
+  
+
+  formattable(caller_choice_hour ,caption =  "Caller Choice Last Day Hour-wise", align = "l")
+  
+  df4 <- caller_choice_hour %>% select(skill,hour_of_day,choice_raw,choice_filtered)
+  df4 <- melt(df4, id=c("skill","hour_of_day"))
+  
+  ggplot(df4,aes(hour_of_day,value,  fill = variable)) + geom_bar(stat= "identity",  color="black", position=position_dodge()) +
+    facet_wrap(~ skill) +
+    scale_fill_brewer(palette="Blues") + labs(title = "Caller Choice", x = "Hour_of_Day", y= "Median_Choice")
+```
+
+## Runtime Correct AP Application Check
+``` {r plot4, echo=FALSE, results = 'asis'}
+  
+  ################################ AP applied correctly check #######################################
+
+  formattable(ap_skill_incorrect, list(area(col = incorrect_ap_perc) ~ color_tile("transparent", "red")),  align = "l", caption =  "Incorrect AP Percentage Skill-wise")
+  
+  formattable(ap_agent_incorrect, list(area(col = incorrect_ap_perc) ~ color_tile("transparent", "red")),  align = "l", caption =  "Incorrect AP Percentage Agent-wise")
+````
+
+## Power Test
+``` {r plot5, echo=FALSE, results = 'asis'}
+  
+  ###################################### Power Test #################################################
+
+   formattable(portaldata2,  align = "l", caption =  "Power Test")
+  
+``````
+
+## Lookup Percentage Analysis
+``` {r plot6, echo=FALSE, results = 'asis'}
+   
+   ## lookup nodes percentage ##
+   
+   
+    ggplot(lookup_data, aes(value,perc)) + geom_bar(stat= "identity", fill = "#56B4E9" ,  position=position_dodge()) +  facet_wrap(~ lookup_node) + geom_text(aes(label=  paste0(as.character(round(perc,1)),"%") ), color= "black", vjust= -0.6, size = 3.2 ) + scale_fill_manual(palette="Greens") + labs(title = "Lookup Nodes Percentage", x = "value", y= "Percentage(%)")  
+```
+
+## VDN-Skill Mapping
+``` {r plot7, echo=FALSE, results = 'asis',error = FALSE, eval = FALSE}
+  
+  ############################## VDN skill Mapping ################################################
+  kable(vdn_skill_map , caption = "VDN Skill Mapping") %>% kable_styling("striped") %>% add_header_above(c(" " = 1, "VDN" = length(colnames(vdn_skill_map)) - 1))  
+  
+````
+
+## Skill Definition
+``` {r plot8, echo=FALSE, message = FALSE,warning = FALSE}
+
+
+  ####################################### Skill Definition ###################################
+  
+  kable(skill_cr_cv,  caption = "Skill Definition") %>% kable_styling("striped")
+  
+  ##formattable(skill_cr_cv, align = 'l' , caption = "Skill Definition")
+  
+  # var_dist_qt
+  # var_dist_oferta
+  # var_dist_tmp
+  # var_dist_filler
+
+for (i in 1:length(is_analysis))
+  {
+    if(is_analysis[i]){
+      
+      x = colnames(dist8)[[2]]
+      y = colnames(dist8)[[i+1]]
+      data1 <- dist8 %>% group_by_(x,y) %>% summarise(off_cr = mean(issale))
+      data2 <- dist8 %>% group_by_(x,y) %>%  count(, name='total_calls_off')
+      data3 <- left_join(data1,data2)
+      z <- colnames(data3)[[3]]
+      a <- colnames(data3)[[4]]
+      
+      
+      plot1 <- ggplot(data3, aes_(x = as.name(y) , y = as.name(z))) + 
+      geom_bar(stat= "identity", position=position_dodge() , color = "black", fill = "cornsilk2") + 
+      facet_wrap(~ skill)+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = paste0((as.character(y)), " CR Distribution Skillwise "))
+      
+      plot2 <- ggplot(data3, aes_(x = as.name(y) , y = as.name(a))) + 
+      geom_bar(stat= "identity", position=position_dodge() , color = "black", fill = "cornsilk2") + 
+      facet_wrap(~ skill)+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = paste0((as.character(y)), " Call Volume Distribution Skillwise "))
+      
+      print(plot2)
+      print(plot1)
+      
+    }
+  }
+
+
+
+
+
+
+
+ 
+  # ggplot(var_dist_qt,aes(c_qt_durc_trfd_3_crm,cv_perc)) + geom_bar(stat= "identity", position=position_dodge() , color = "black", fill = "cornsilk2") + facet_wrap(~ skill)+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = "Qt Call Volume Distribution Skillwise", x = "Qt_bin", y= "Call Volume %")
+  # 
+  #  ggplot(var_dist_qt,aes(c_qt_durc_trfd_3_crm,CR)) + geom_bar(stat= "identity", position=position_dodge() , color = "black", fill = "cornsilk2") + facet_wrap(~ skill)+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = "Qt CR Distribution Skillwise", x = "Qt_bin", y= "CR %")
+  # 
+  #  ggplot(var_dist_tmp,aes(c_tmp_base_3_crm ,cv_perc)) + geom_bar(stat= "identity", position=position_dodge() , color = "black", fill =  "turquoise2") + facet_wrap(~ skill)+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = "Tmp Call Volume Distribution Skillwise", x = "Tmp_bin", y= "Call Volume %")
+  #  
+  #  ggplot(var_dist_tmp,aes(c_tmp_base_3_crm ,CR)) + geom_bar(stat= "identity", position=position_dodge() , color = "black", fill =  "turquoise2") + facet_wrap(~ skill)+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = "Tmp CR Distribution Skillwise", x = "Tmp_bin", y= "CR %")
+  # 
+  # ggplot(var_dist_filler,aes(m_filler_ll ,cv_perc)) + geom_bar(stat= "identity", position=position_dodge() , color = "black", fill =  "#E69F00") + facet_wrap(~ skill)+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = "Filler Call Volume Distribution Skillwise", x = "Filler", y= "Call Volume %")
+  # 
+  #   ggplot(var_dist_filler,aes(m_filler_ll, CR)) + geom_bar(stat= "identity", position=position_dodge() , color = "black", fill =  "#E69F00") + facet_wrap(~ skill)+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = "Filler CR Distribution Skillwise", x = "Filler", y= "CR %")
+  #  
+  # ggplot(var_dist_freshbau,aes(m_freshbau ,cv_perc)) + geom_bar(stat= "identity", position=position_dodge() , color = "black", fill = "#999999" ) + facet_wrap(~ skill)+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = "Fresh_Bau Call Volume Distribution Skillwise", x = "Fresh_Bau", y= "Call Volume %")
+  # 
+  #  ggplot(var_dist_freshbau,aes(m_freshbau , CR)) + geom_bar(stat= "identity", position=position_dodge() , color = "black", fill = "#999999" ) + facet_wrap(~ skill)+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = "Fresh_Bau CR Distribution Skillwise", x = "Fresh_Bau", y= "CR %")
+  # 
+  #   # ggplot(var_dist_field2,aes(m_field_2_ll ,cv_perc)) + geom_bar(stat= "identity", position=position_dodge() , color = "black", fill = "#56B4E9" )  + facet_wrap(~ skill)+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = "Plan Value Distribution Skillwise", x = "Plan Value", y= "Call Volume %")
+  #   
+  #   ggplot(var_dist_oferta,aes(m_oferta_ll ,cv_perc)) + geom_bar(stat= "identity", position=position_dodge() , color = "black", fill = "#56B4E9" ) + coord_flip()  + facet_wrap(~ skill)+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = "Plan Call Volume Distribution Skillwise", x = "Plan", y= "Call Volume %")
+  #   
+  #     ggplot(var_dist_oferta,aes(m_oferta_ll ,CR)) + geom_bar(stat= "identity", position=position_dodge() , color = "black", fill = "#56B4E9" ) + coord_flip()  + facet_wrap(~ skill)+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = "Plan CR Distribution Skillwise", x = "Plan", y= "CR %")
+  
+````
+
+## AHT Analysis
+``` {r plot9, echo=FALSE, results = 'asis'}
+    
+######################################### aht analysis #########################################
+
+
+  ggplot(x_aht, aes(x=aht, fill=is_sale)) + geom_density(alpha=0.4) +   geom_vline(data=y_aht, aes(xintercept=grp.mean, color=is_sale),linetype="dashed")+  xlim(0, 1500) + facet_wrap(~ skill)+ 
+    labs(title = "AHT Density Plot Sale Vs. Non-sale", x = "AHT", y= "Density") + scale_fill_brewer(palette="Dark2")
+  
+  
+    ggplot(aht_bin_raw_sale,aes(aht_bin ,raw_sale)) + geom_bar(stat= "identity", position=position_dodge() , fill = "#E69F00" ) + facet_wrap(~ skill)+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) + labs(title = "Raw Sales Distribution AHT wise", x = "AHT Bin (100 Sec Interval)", y= "Raw Sales Count")+ xlim(0, 50) + scale_y_continuous(breaks = seq(0, max(aht_bin_raw_sale$raw_sale), by = 50))
+    
+    
+# 
+#    kable(pred_cr_tot,  caption = "Predicted CR and Gain by AHT") %>% kable_styling("striped") 
+  
+
+
+```
