@@ -1,0 +1,109 @@
+---
+title: "Unknown_Agent_CR_&_Call_Count"
+output: html_document
+
+
+params:
+  startdate:  'DATE_SUB(CURDATE(), INTERVAL 1 MONTH)'                            ##start date for report, interval can be changed if needed
+  enddate: 'CURDATE()'                                                           ##end date
+  tableName: '`mundiale_tfn.smetable_new2`'                                      ##table name
+  programID: 'MundialeAYTY_TFN'                                                  ##programID
+  
+  sme_filter: "crm_lookup = 1 and leadlist_lookup = 1 and c_offer_type_CRM = 'PRE_CTRL' and skill is not null and on_off = 0 and skill <> 'NA'               and tipo_de_ligacao = 'Preditivo' and nconnects_oth2 <> 'NA'"
+               #sme filter in addition to callTime. Leave it empty if there isn't any
+  
+  variables: "date(calltime) as date, skill, (avg(case when on_off = 0 and rscorez = 0 then issale end)) offCR, (sum(case when rscorez = 0 then 1 else 0                end)/count(*)) as call_perc" 
+              ##verify the above variables
+  time_column: "calltime" 
+
+  
+  fileName: "0024900024_Mundiale_Variable_Correlation_Matrix" #Output file name 
+
+  database: "smexplorerdata" # Schema on ai server.
+  user : 'mundiale_ai_user'
+  pass : "#mundiale_ai_user#"
+  host : '10.4.2.82'
+  port : 3307
+
+---
+
+```{r packages2, include=FALSE , warning=FALSE , message=FALSE}
+##Loading essential libraries
+
+library(dplyr)
+library(RMySQL)
+library(data.table)
+library(knitr)
+library(ggplot2)
+library(lubridate)
+
+
+```
+
+
+
+```{r disconnect connections2, include=FALSE , warning=FALSE , message=FALSE}
+all_cons <- dbListConnections(MySQL())
+# print(all_cons)
+for(con in all_cons)
+  +  dbDisconnect(con)
+```
+
+
+
+```{r SmeQuery2 , include=FALSE , echo=FALSE , warning=FALSE , message=FALSE}
+
+SmeQuery <- function(params){
+    
+    my_query = paste0("select " , params$variables, " from " ,params$tableName,
+                      " where ",  params$sme_filter, " and ", params$time_column, " between " ,params$startdate, " and " , params$enddate, "group by 1,2")
+    return(my_query)
+  }
+```
+
+
+
+
+
+```{r get_data2 , include=FALSE, echo=FALSE  , warning=FALSE , message=FALSE}
+
+my_query <- SmeQuery(params)
+
+MySQLConnect216AI <- dbConnect(dbDriver("MySQL"),user=params$user, password=params$pass,
+                               dbname=params$database, host=params$host, port = params$port)
+
+
+VARNAME <- dbGetQuery(MySQLConnect216AI, my_query); 
+
+on.exit(dbDisconnect(MySQLConnect216AI))
+
+dist=as.data.frame(VARNAME)
+
+data = dist
+setnames(data, tolower(names(data)))
+data$offcr = data$offcr * 100
+data$call_perc = data$call_perc * 100
+```
+
+# Unknown Agents CR
+``` {r plot2, echo=FALSE, warning = FALSE }
+
+data[is.na(data)] = 0
+data$date = ymd(data$date)
+##data
+ggplot(data=data, aes(x=date, y=offcr, group=1, color = "Off_CR")) +
+  geom_line(color="red")+geom_point(color = "black") + facet_wrap(~ skill)
+
+ggplot(data=data, aes(x=date, y=call_perc, group=1, color = "Call_perc")) +
+  geom_line(color="red")+geom_point(color = "black") + facet_wrap(~ skill)
+##ggplot(data=data, aes(x=date, y=offcr)) +
+ ## geom_line() + geom_point()+
+##  scale_color_brewer(palette="Paired")+
+  ##theme_minimal() 
+
+##str(data)
+
+
+##ggplot(data,aes(date,offcr,color="Off_CR")+geom_line(color="Off_CR")+
+  ##geom_line(data,aes(date,call_perc,color="Second line"))
+```
